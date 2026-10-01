@@ -1,33 +1,34 @@
 ﻿using System.Collections.Concurrent;
 
 namespace Reservas.Application.Cqrs;
-    public sealed class Dispatcher(IServiceProvider services) : IDispatcher
-    {
-        private static readonly ConcurrentDictionary<(Type, Type), object> InvocadoresDeComando = new();
-        private static readonly ConcurrentDictionary<(Type, Type), object> InvocadoresDeQuery = new();
 
-        private static InvalidOperationException SinHandler(Type mensaje, string clase) =>
-        new($"No hay handler registrado para la {clase} '{mensaje.Name}'. " +
-            "Revisa que exista una clase que la atienda y que se haya llamado a AddApplication() en el host.");
+public sealed class Dispatcher(IServiceProvider servicios) : IDispatcher
+{
+    private static readonly ConcurrentDictionary<(Type, Type), object> InvocadoresDeComando = new();
+    private static readonly ConcurrentDictionary<(Type, Type), object> InvocadoresDeQuery = new();
 
-    private abstract class InvocadorDeQuery<TResultado>
+    public Task<TResultado> EnviarAsync<TResultado>(ICommand<TResultado> comando, CancellationToken ct = default)
     {
-        public abstract Task<TResultado> InvocarAsync(
-            IQuery<TResultado> query, IServiceProvider servicios, CancellationToken ct);
+        ArgumentNullException.ThrowIfNull(comando);
+
+        var invocador = (InvocadorDeComando<TResultado>)InvocadoresDeComando.GetOrAdd(
+            (comando.GetType(), typeof(TResultado)),
+            clave => Activator.CreateInstance(
+                typeof(InvocadorDeComando<,>).MakeGenericType(clave.Item1, clave.Item2))!);
+
+        return invocador.InvocarAsync(comando, servicios, ct);
     }
 
-    private sealed class InvocadorDeQuery<TQuery, TResultado> : InvocadorDeQuery<TResultado>
-      where TQuery : IQuery<TResultado>
+    public Task<TResultado> ConsultarAsync<TResultado>(IQuery<TResultado> query, CancellationToken ct = default)
     {
-        public override Task<TResultado> InvocarAsync(
-            IQuery<TResultado> query, IServiceProvider servicios, CancellationToken ct)
-        {
-            var handler = servicios.GetService(typeof(IQueryHandler<TQuery, TResultado>))
-                              as IQueryHandler<TQuery, TResultado>
-                          ?? throw SinHandler(typeof(TQuery), "query");
+        ArgumentNullException.ThrowIfNull(query);
 
-            return handler.ManejarAsync((TQuery)query, ct);
-        }
+        var invocador = (InvocadorDeQuery<TResultado>)InvocadoresDeQuery.GetOrAdd(
+            (query.GetType(), typeof(TResultado)),
+            clave => Activator.CreateInstance(
+                typeof(InvocadorDeQuery<,>).MakeGenericType(clave.Item1, clave.Item2))!);
+
+        return invocador.InvocarAsync(query, servicios, ct);
     }
 
     private abstract class InvocadorDeComando<TResultado>
@@ -50,7 +51,27 @@ namespace Reservas.Application.Cqrs;
         }
     }
 
+    private abstract class InvocadorDeQuery<TResultado>
+    {
+        public abstract Task<TResultado> InvocarAsync(
+            IQuery<TResultado> query, IServiceProvider servicios, CancellationToken ct);
+    }
 
+    private sealed class InvocadorDeQuery<TQuery, TResultado> : InvocadorDeQuery<TResultado>
+        where TQuery : IQuery<TResultado>
+    {
+        public override Task<TResultado> InvocarAsync(
+            IQuery<TResultado> query, IServiceProvider servicios, CancellationToken ct)
+        {
+            var handler = servicios.GetService(typeof(IQueryHandler<TQuery, TResultado>))
+                              as IQueryHandler<TQuery, TResultado>
+                          ?? throw SinHandler(typeof(TQuery), "query");
+
+            return handler.ManejarAsync((TQuery)query, ct);
+        }
+    }
+
+    private static InvalidOperationException SinHandler(Type mensaje, string clase) =>
+        new($"No hay handler registrado para la {clase} '{mensaje.Name}'. " +
+            "Revisa que exista una clase que la atienda y que se haya llamado a AddApplication() en el host.");
 }
-
-   
